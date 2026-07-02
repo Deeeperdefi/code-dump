@@ -1,0 +1,119 @@
+import os
+import sys
+import logging
+import asyncio
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from openai import AsyncOpenAI
+
+# Setup detailed logging to force outputs to Render's terminal console
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# --- OPENAI CLIENT INITIALIZATION ---
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+ai_client = AsyncOpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+
+# --- TELEGRAM BOT HANDLERS ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Greets the user and displays clean, non-truncated button menus."""
+    # Keeps text short and clean so Telegram doesn't cut them off with ellipses
+    keyboard = [['⚡ Live Matches', '📊 Standings']]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    welcome_text = (
+        "⚽ *GoalPulse0bot — AI Football Companion* ⚽\n\n"
+        "Powered entirely by OpenAI! Ask me anything about live match events, "
+        "scores, goal details, line-ups, or league tables.\n\n"
+        "⚡ *Layout Engine:* Flashscore Emulation Mode\n"
+        "Use the menu below or ask a football question directly!"
+    )
+    await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_query=None):
+    """Routes incoming requests into the OpenAI completion architecture."""
+    user_query = custom_query if custom_query else update.message.text
+    chat_id = update.effective_chat.id
+
+    if not OPENAI_KEY or not ai_client:
+        await update.message.reply_text(
+            "⚠️ *System Error:* `OPENAI_API_KEY` is missing in Render environment profiles.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Trigger typing status indicator
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    system_prompt = (
+        "You are GoalPulse0bot, an advanced real-time football tracker and analyst. "
+        "Your UI layout must emulate the premium Flashscore app style perfectly. "
+        "Guidelines:\n"
+        "1. Always structure output with distinct flags, country tags, and bold league headers.\n"
+        "2. Break down matches into clean rows showing: Home vs Away, Scorelines, Elapsed Time, "
+        "and detailed Sub-rows for goals (⚽), yellow cards (🟨), and red cards (🟥).\n"
+        "3. Always incorporate club/country flags or text-emojis (e.g., 🇦🇷, 🇬🇧, 🇫🇷) at the start of rows.\n"
+        "4. Keep your updates ultra-snappy, direct, and readable like a digital scoreboard."
+    )
+
+    try:
+        response = await ai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query}
+            ],
+            temperature=0.3,
+            max_tokens=800
+        )
+        
+        ai_reply = response.choices[0].message.content
+        await update.message.reply_text(ai_reply, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"OpenAI Execution Error: {e}")
+        await update.message.reply_text("❌ Failed to process current football live-feeds. Please try again.")
+
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Intercepts custom keyboard actions and processes them gracefully."""
+    text = update.message.text
+    if not text:
+        return
+        
+    logger.info(f"Received text for routing: {text}")
+
+    # Partial string matching handles any mobile truncation gracefully
+    if "Live" in text or "Matches" in text:
+        prompt = "Show me live football scores happening right now worldwide, including match cards with goals and statistics."
+        await handle_ai_response(update, context, custom_query=prompt)
+    elif "Standings" in text or "League" in text:
+        prompt = "Show me the current standings table for the top European leagues and international groups."
+        await handle_ai_response(update, context, custom_query=prompt)
+    else:
+        await handle_ai_response(update, context)
+
+def main():
+    """Main execution block."""
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        logger.critical("CRITICAL ERROR: TELEGRAM_BOT_TOKEN is completely missing!")
+        return
+
+    logger.info("Initializing GoalPulse0bot application layers...")
+    
+    # Building explicitly without an unconfigured JobQueue to stop framework crashes
+    app = Application.builder().token(TOKEN).build()
+
+    # Route registrations
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_router))
+
+    logger.info("GoalPulse0bot Flashscore-Engine Online. Starting polling worker...")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == '__main__':
+    main()
